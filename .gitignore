@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Next.js build output
+backend/.next/
+backend/out/
+backend/tsconfig.tsbuildinfo
+
+# Extension build output
+extension/dist/
+
+# Environment variables — NEVER commit these
+backend/.env
+backend/.env.local
+backend/.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.cursor/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code local settings
+.claude/settings.local.json
