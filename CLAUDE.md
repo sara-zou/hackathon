@@ -1,183 +1,148 @@
-# LiveCheck — YouTube Live Fact Checker
+# LiveCheck — YouTube AI Fact Checker
 
-Hackathon project. Real-time AI fact-checking of YouTube videos via a Chrome extension + Next.js backend powered by the Subconscious platform.
-
----
-
-## Hackathon Rubric
-
-**Originality:** something no one in the room could have thought of
-**Ambition:** attempted something that might not have even been possible
-**Use of platform:** would have been significantly harder or impossible without subconscious.dev — a showcase for the platform
-**Technical depth:** deep engineering work, hit walls and found creative solutions, the slideshow makes you want to read the code
+Real-time and on-demand AI fact-checking for YouTube videos (live streams and VODs) via a Chrome extension + Next.js backend, powered by the Subconscious platform.
 
 ---
 
-## Project Overview
+## Architecture
 
-A Chrome extension that:
-1. Reads YouTube closed captions in real time via `MutationObserver` on `.ytp-caption-segment`
-2. Every 15 seconds, sends caption buffer to the backend → **Stage 1** extracts factual claims (`tim-edge`, no tools, structured output)
-3. Each claim goes into a capped queue → **Stage 2** fact-checks it (`tim-claude` + 5 tools, structured output)
-4. Results are shown in a Shadow DOM side panel injected next to the video
-5. Each claim card shows: verdict, confidence %, one-sentence summary, expandable step-by-step reasoning, sources, and a timestamp button that seeks the video
+### Two Flows
 
-### The Subconscious angle (why this needs the platform)
-- The nested multi-hop tool use (Wikipedia → web search → news → papers) per claim is orchestrated entirely server-side — no client-side tool loop
-- The two-stage pipeline (fast extraction with `tim-edge`, deep check with `tim-claude`) shows platform flexibility
-- Structured JSON output from both stages makes the UI deterministic
+**Recorded (VOD)**
+1. Extension detects video is a VOD, extracts videoId
+2. Checks `/api/video/results?videoId=xxx` — if already processed, renders cached results instantly
+3. Otherwise opens SSE stream to `/api/recorded/stream?videoId=xxx&title=...`
+4. Backend fetches full transcript (`youtube-transcript`), extracts all claims (tim-claude, timed transcript), fact-checks each in parallel batches (tim-claude + 5 tools, full depth), streams `claim` events as each completes
+5. All results saved to Supabase permanently — subsequent users get instant cache hit
 
----
+**Live**
+1. Extension detects live stream, starts caption reader (1s polling on `.ytp-caption-segment`)
+2. Every 30s: POST `/api/live/ingest` with caption buffer (fire-and-forget, runs ~1–2 min)
+3. Every 15s: polls `/api/video/results?videoId=xxx` for new results
+4. Backend extracts claims (tim-edge, fast), deduplicates against DB, fact-checks top 2 claims (tim-claude + 2 tools, shallow), writes to Supabase
+5. Multiple users on the same stream see the same cached results from DB
 
-## Tech Stack
-
-| Layer | Tech |
-|---|---|
-| Chrome extension | TypeScript, Preact, `@preact/signals`, Vite (IIFE lib mode), Manifest V3, Shadow DOM |
-| Backend | Next.js 15 App Router, TypeScript, `subconscious` SDK |
-| Fact-check tools | Wikipedia (custom function tool endpoint), `web_search`, `news_search`, `fast_search`, `research_paper_search` |
-| Deployment | Vercel (backend), Chrome extension loaded unpacked |
+### Key Design Decisions
+- **No in-memory state** — backend is fully stateless; Supabase is the source of truth
+- **Word-overlap deduplication** — same claim phrased differently → skip (60% threshold)
+- **Live: shallow research** — web_search + fast_search only (2 tools, fewer hops)
+- **Recorded: deep research** — Wikipedia + web + news + fast + research_paper (5 tools, full depth)
+- **SSE for recorded** — progressive results as each claim completes (best UX)
+- **Polling for live** — simple, reliable, works with stateless serverless
 
 ---
 
 ## Project Structure
 
 ```
-Hackathon/
-├── CLAUDE.md                          ← you are here
-├── backend/                           ← Next.js API (deploy to Vercel)
-│   ├── .env                           ← NOT committed — see Setup below
+LiveCheck/
+├── CLAUDE.md
+├── supabase/
+│   └── schema.sql                        ← Run in Supabase SQL editor
+├── backend/                              ← Next.js API (deploy to Vercel)
+│   ├── .env                              ← NOT committed
 │   ├── .env.example
 │   ├── package.json
 │   ├── next.config.ts
-│   ├── tsconfig.json
-│   ├── app/
-│   │   ├── layout.tsx
-│   │   └── api/
-│   │       ├── extract-claims/route.ts   ← Stage 1: tim-edge claim extractor
-│   │       ├── fact-check/route.ts       ← Stage 2: tim-claude fact-checker
-│   │       └── tools/wikipedia/route.ts  ← Wikipedia function tool endpoint
+│   ├── app/api/
+│   │   ├── video/results/route.ts        ← GET cached results for any videoId
+│   │   ├── live/ingest/route.ts          ← POST caption buffer → extract + fact-check
+│   │   ├── recorded/stream/route.ts      ← SSE stream — process VOD + stream results
+│   │   └── tools/wikipedia/route.ts      ← Wikipedia function tool endpoint
 │   └── lib/
-│       └── schemas.ts                 ← shared types + Subconscious answerFormat schemas
-└── extension/                         ← Chrome extension
-    ├── package.json
-    ├── vite.config.ts                 ← builds IIFE bundle to dist/
-    ├── tsconfig.json
-    ├── public/
-    │   └── manifest.json
+│       ├── schemas.ts                    ← Shared types + Subconscious answerFormat schemas
+│       ├── supabase.ts                   ← Supabase server client
+│       ├── transcript.ts                 ← YouTube transcript fetcher
+│       ├── factPipeline.ts               ← Claim extraction + fact-checking logic
+│       └── cors.ts                       ← CORS helpers
+└── extension/                            ← Chrome extension (Preact, Vite IIFE)
+    ├── public/manifest.json
+    ├── vite.config.ts
     └── src/
-        ├── vite-env.d.ts              ← declares ?raw and __BACKEND_URL__
-        ├── types.ts                   ← shared TypeScript types
+        ├── types.ts
         └── content/
-            ├── index.tsx              ← entry point, injects Shadow DOM
-            ├── captionReader.ts       ← MutationObserver on YouTube captions
-            ├── claimQueue.ts          ← extraction + fact-check queue, Preact signals state
-            ├── videoContext.ts        ← reads video title/channel/description from DOM
+            ├── index.tsx                 ← Entry: mount panels, detect type, start controller
+            ├── videoDetector.ts          ← getVideoId(), detectVideoType()
+            ├── claimStore.ts             ← Preact signals state (results, pending, status)
+            ├── liveController.ts         ← Live flow: caption ingest + polling
+            ├── recordedController.ts     ← VOD flow: cache check + SSE stream
+            ├── captionReader.ts          ← Polling on .ytp-caption-segment
+            ├── videoContext.ts           ← Read title/channel/description from YouTube DOM
             └── overlay/
-                ├── App.tsx            ← main panel component
-                ├── ClaimCard.tsx      ← individual claim with expand/reasoning/seek
-                ├── ScoreMeter.tsx     ← animated ring showing overall accuracy %
-                └── styles.css         ← injected into Shadow DOM (fully isolated)
+                ├── App.tsx               ← Main panel (LIVE/VOD badge, score, claim list)
+                ├── ClaimCard.tsx         ← Claim with verdict, expand, seek button
+                ├── ScoreMeter.tsx        ← Animated accuracy ring
+                ├── VideoNotification.tsx ← In-player "Verifying N claims…" pill
+                └── styles.css            ← Shadow DOM CSS (fully isolated)
 ```
 
 ---
 
-## Setup (macOS / fresh machine)
+## Setup
 
 ### Prerequisites
 ```bash
-# macOS with Homebrew
-brew install node   # Node 18+ required
+brew install node  # Node 18+
 ```
+
+### Supabase
+1. Create project at https://supabase.com
+2. Run `supabase/schema.sql` in the SQL editor
+3. Copy project URL and service role key
 
 ### Backend
 ```bash
 cd backend
 npm install
-
-# Create .env from the example
 cp .env.example .env
-# Then edit .env and set:
-#   SUBCONSCIOUS_API_KEY=sk-a6321b94b5d8b7b5bdc351d9dec0368aa478ce84b263428c269049c2d820e8ca
-#   BACKEND_URL=http://localhost:3001  (for local dev)
-
-npm run dev   # starts on http://localhost:3001
+# Fill in: SUBCONSCIOUS_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, BACKEND_URL
+npm run dev  # http://localhost:3001
 ```
 
 ### Expose backend publicly (required for Wikipedia function tool)
-The Subconscious platform calls function tools from its own servers, so `localhost` won't work.
-Run this in a separate terminal while developing:
 ```bash
 npx ngrok http 3001
-# Copy the https://xxxx.ngrok.io URL
-# Update BACKEND_URL in .env to that URL, then restart npm run dev
+# Copy the https URL → set BACKEND_URL in .env → restart npm run dev
 ```
 
 ### Extension
 ```bash
 cd extension
-
-# Set backend URL before building (bake it into the bundle)
-# For local dev with ngrok:
+npm install
 BACKEND_URL=https://xxxx.ngrok.io npm run build
-
-# Or for prod (after Vercel deploy):
-BACKEND_URL=https://your-app.vercel.app npm run build
+# Load extension/dist/ as unpacked extension in Chrome
 ```
 
-### Load extension in Chrome
-1. Go to `chrome://extensions`
-2. Enable "Developer mode" (top right)
-3. Click "Load unpacked" → select `extension/dist/`
-4. Open any YouTube video, enable captions (CC button)
-5. The LiveCheck panel appears on the right side of the video
+---
+
+## Environment Variables
+
+| Variable | Where | Notes |
+|---|---|---|
+| `SUBCONSCIOUS_API_KEY` | backend/.env | From https://subconscious.dev/platform |
+| `SUPABASE_URL` | backend/.env | Project URL from Supabase dashboard |
+| `SUPABASE_SERVICE_ROLE_KEY` | backend/.env | Service role key (never expose client-side) |
+| `BACKEND_URL` | backend/.env + extension build | Public URL (ngrok for dev, Vercel for prod) |
 
 ---
 
-## Current Status
+## Subconscious Usage
 
-- [x] Full backend scaffolded and written
-- [x] Extension scaffolded and written
-- [x] `.env` created with API key
-- [ ] `npm install` not yet run (needed on macOS machine)
-- [ ] Extension not yet built
-- [ ] ngrok not yet configured (BACKEND_URL still set to localhost)
-- [ ] Wikipedia function tool will fail until BACKEND_URL is a real public URL
-
-## Known Issues Fixed
-- `index.ts` renamed to `index.tsx` (JSX in .ts file was a TS error)
-- `vite.config.ts` entry updated to point to `index.tsx`
-- `src/vite-env.d.ts` added (declares `?raw` and `__BACKEND_URL__`)
-- `ScoreMeter.tsx` uses `useComputed` instead of `computed` inside component body
+| Stage | Engine | Tools | Notes |
+|---|---|---|---|
+| Live extraction | `tim-edge` | none | Fast, cheap, structured output |
+| Live fact-check | `tim-claude` | web_search, fast_search | Shallow (2 tools) |
+| VOD extraction | `tim-claude` | none | Full transcript with timestamps |
+| VOD fact-check | `tim-claude` | Wikipedia + web + news + fast + research_paper | Deep (5 tools) |
 
 ---
 
-## Next Steps
+## Vercel Deployment Notes
 
-1. `cd backend && npm install && npm run dev`
-2. In another terminal: `npx ngrok http 3001`, copy the URL
-3. Update `backend/.env` → set `BACKEND_URL=https://xxxx.ngrok.io`
-4. Restart backend
-5. `cd extension && BACKEND_URL=https://xxxx.ngrok.io npm run build`
-6. Load `extension/dist/` as unpacked extension in Chrome
-7. Open a YouTube video with captions and test
-
-## Vercel Deployment (for demo)
-```bash
-cd backend
-npx vercel --prod
-# Set SUBCONSCIOUS_API_KEY and BACKEND_URL env vars in Vercel dashboard
-```
-Then rebuild extension with `BACKEND_URL=https://your-app.vercel.app npm run build`.
-
----
-
-## Subconscious API
-- API key: in `backend/.env` — do NOT commit this file
-- Engines used: `tim-edge` (extraction) + `tim-claude` (fact-check)
-- Tools: `WikipediaSearch` (function tool → `/api/tools/wikipedia`), `web_search`, `news_search`, `fast_search`, `research_paper_search`
-- Structured output via `answerFormat` (JSON Schema) — `run.result?.answer` returns a parsed object directly
+- `recorded/stream` route uses `runtime = 'nodejs'` and `maxDuration = 300`
+- Vercel Pro supports up to 900s; Hobby is capped at 60s (too short for long videos)
+- For very long videos on Hobby tier, consider migrating `recorded/stream` to a background job (Trigger.dev, Inngest, etc.)
 
 ## Installed Skills
-- `subconscious-dev` — Subconscious platform reference (`.claude/skills/subconscious-dev/`)
-- `next-best-practices` — Next.js patterns (`.claude/skills/next-best-practices/`)
+- `subconscious-dev` — Subconscious platform reference
+- `next-best-practices` — Next.js patterns

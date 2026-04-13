@@ -8,8 +8,10 @@
     "start": "next start --port 3001"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.49.4",
     "next": "^15.3.0",
-    "subconscious": "latest"
+    "subconscious": "latest",
+    "youtube-transcript": "^1.2.1"
   },
   "devDependencies": {
     "@types/node": "^22",

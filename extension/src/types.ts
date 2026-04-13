@@ -1,3 +1,5 @@
+export type VideoType = 'live' | 'vod'
+
 export type Verdict =
   | 'true'
   | 'mostly-true'
@@ -17,14 +19,15 @@ export interface FactCheckReasoningStep {
 }
 
 export interface FactCheckResult {
+  id?: string           // DB UUID (present when loaded from Supabase)
   claim: string
   verdict: Verdict
-  confidence: number // 0–100
+  confidence: number    // 0–100
   summary: string
   sources: FactCheckSource[]
   reasoning: FactCheckReasoningStep[]
-  timestamp: number   // seconds into the video
-  checkedAt: number   // Date.now()
+  timestamp: number     // seconds into the video
+  checkedAt: number     // Date.now() epoch ms
 }
 
 export interface VideoContext {

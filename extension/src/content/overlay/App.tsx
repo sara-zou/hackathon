@@ -1,12 +1,28 @@
 import { useState } from 'preact/hooks'
+import { useComputed } from '@preact/signals'
 import { ScoreMeter } from './ScoreMeter'
 import { ClaimCard } from './ClaimCard'
-import { results, pending } from '../claimQueue'
+import { results, pending, videoType, processingStatus, processingMessage } from '../claimStore'
 
 export function App() {
   const [collapsed, setCollapsed] = useState(false)
 
-  const hasActivity = results.value.length > 0 || pending.value.length > 0
+  const hasActivity = useComputed(
+    () => results.value.length > 0 || pending.value.length > 0
+  )
+
+  const statusBadge = useComputed(() => {
+    if (videoType.value === 'live') return { label: 'LIVE', cls: 'badge-live' }
+    if (videoType.value === 'vod') return { label: 'VOD', cls: 'badge-vod' }
+    return null
+  })
+
+  const showStatusMsg = useComputed(
+    () =>
+      processingStatus.value === 'processing' &&
+      processingMessage.value.length > 0 &&
+      results.value.length === 0
+  )
 
   return (
     <div class={`panel ${collapsed ? 'collapsed' : ''}`}>
@@ -26,12 +42,33 @@ export function App() {
             <span class="header-logo-dot" />
             LiveCheck
           </div>
+          {statusBadge.value && (
+            <span class={`type-badge ${statusBadge.value.cls}`}>
+              {statusBadge.value.label}
+            </span>
+          )}
         </div>
         <ScoreMeter results={results} />
       </div>
 
       {/* Claim list */}
       <div class="claim-list">
+        {/* Status message (processing, no results yet) */}
+        {showStatusMsg.value && (
+          <div class="status-msg">
+            <div class="spinner" />
+            <span>{processingMessage.value}</span>
+          </div>
+        )}
+
+        {/* Error state */}
+        {processingStatus.value === 'error' && results.value.length === 0 && (
+          <div class="empty-state">
+            <div class="empty-icon">⚠</div>
+            <div>{processingMessage.value || 'Processing failed'}</div>
+          </div>
+        )}
+
         {/* In-progress checks */}
         {pending.value.map((p) => (
           <div key={p.id} class="pending-card">
@@ -48,13 +85,15 @@ export function App() {
         ))}
 
         {/* Empty state */}
-        {!hasActivity && (
-          <div class="empty-state">
-            <div class="empty-icon">◎</div>
-            <div>Listening for claims…</div>
-            <div class="empty-hint">Enable CC on the video to start fact-checking.</div>
-          </div>
-        )}
+        {!hasActivity.value &&
+          processingStatus.value !== 'processing' &&
+          processingStatus.value !== 'error' && (
+            <div class="empty-state">
+              <div class="empty-icon">◎</div>
+              <div>Listening for claims…</div>
+              <div class="empty-hint">Enable CC on the video to start fact-checking.</div>
+            </div>
+          )}
       </div>
     </div>
   )

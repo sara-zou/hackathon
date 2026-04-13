@@ -1,5 +1,5 @@
 import { useComputed } from '@preact/signals'
-import { pending } from '../claimQueue'
+import { pending } from '../claimStore'
 
 export function VideoNotification() {
   const count = useComputed(() => pending.value.length)

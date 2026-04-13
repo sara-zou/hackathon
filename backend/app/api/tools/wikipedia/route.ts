@@ -6,7 +6,12 @@ export async function OPTIONS() {
 }
 
 export async function POST(req: NextRequest) {
-  const { query } = await req.json()
+  const body = await req.json()
+  // Subconscious may wrap params — try flat, then nested formats
+  const query: string | undefined =
+    body?.query ?? body?.parameters?.query ?? body?.input?.query
+
+  console.log('[wikipedia] body:', JSON.stringify(body), '→ query:', query)
 
   if (!query?.trim()) {
     return corsJson({ error: 'query required' }, { status: 400 })

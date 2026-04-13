@@ -1,6 +1,6 @@
 import type { OutputSchema } from 'subconscious'
 
-// ── Shared types (mirrored in extension/src/types.ts) ────────────────────────
+// ── Shared types ──────────────────────────────────────────────────────────────
 
 export interface VideoContext {
   title: string
@@ -8,25 +8,15 @@ export interface VideoContext {
   description: string
 }
 
-export interface ExtractClaimsRequest {
-  captions: string
-  videoContext: VideoContext
-}
-
 export interface ExtractedClaim {
   text: string
   type: 'factual' | 'statistic' | 'opinion' | 'other'
-  priority: number // 1–5
+  priority: number      // 1–5
+  timestampSecs?: number // present when extracted from a timed transcript
 }
 
 export interface ExtractClaimsResponse {
   claims: ExtractedClaim[]
-}
-
-export interface FactCheckRequest {
-  claim: string
-  videoContext: VideoContext
-  timestamp: number // seconds into the video
 }
 
 export type Verdict =
@@ -47,15 +37,17 @@ export interface FactCheckReasoningStep {
   finding: string
 }
 
+/** Shape returned by the API to clients (extension). */
 export interface FactCheckResult {
+  id?: string           // DB UUID (present when loaded from Supabase)
   claim: string
   verdict: Verdict
-  confidence: number // 0–100
+  confidence: number    // 0–100
   summary: string
   sources: FactCheckSource[]
   reasoning: FactCheckReasoningStep[]
-  timestamp: number
-  checkedAt: number
+  timestamp: number     // seconds into the video
+  checkedAt: number     // Date.now() epoch ms
 }
 
 // ── Subconscious answerFormat schemas ────────────────────────────────────────
@@ -76,13 +68,17 @@ export const EXTRACT_CLAIMS_SCHEMA: OutputSchema = {
           },
           type: {
             type: 'string',
-            enum: ['factual', 'statistic', 'opinion', 'other'],
-            description: 'Classification of the claim',
+            description: 'Classification of the claim (e.g. factual, statistic, event, opinion)',
           },
           priority: {
             type: 'number',
             description:
               '1–5: 5 = specific verifiable fact or statistic, 3 = general factual claim, 1 = borderline / hard to check',
+          },
+          timestampSecs: {
+            type: 'number',
+            description:
+              'Approximate video timestamp in seconds where this claim was made (convert from [M:SS] markers if present)',
           },
         },
         required: ['text', 'type', 'priority'],
@@ -138,4 +134,19 @@ export const FACT_CHECK_SCHEMA: OutputSchema = {
     },
   },
   required: ['verdict', 'confidence', 'summary', 'sources', 'reasoning'],
+}
+
+const FACT_CHECK_ITEM = FACT_CHECK_SCHEMA
+
+export const BATCH_FACT_CHECK_SCHEMA: OutputSchema = {
+  type: 'object',
+  title: 'BatchFactCheckResults',
+  properties: {
+    results: {
+      type: 'array',
+      description: 'Verdicts for each claim, in the same order as the input list',
+      items: FACT_CHECK_ITEM,
+    },
+  },
+  required: ['results'],
 }
